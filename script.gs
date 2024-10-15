@@ -63,7 +63,10 @@ function updateProducts(type=null) {
   
   var idIndex = headers.indexOf('شناسه محصول');
   var priceIndex = headers.indexOf('قیمت');
+  var skuIndex = headers.indexOf('شناسه داخلی');
   var stockIndex = headers.indexOf('موجودی');
+  var colorIndex = headers.indexOf('رنگ');
+  var sizeIndex = headers.indexOf('سایز');
   var resultIndex = headers.indexOf('نتیجه بروزرسانی');
   
   if (idIndex === -1) {
@@ -116,6 +119,9 @@ function updateProducts(type=null) {
     var productId = data[i][idIndex];
     var price = data[i][priceIndex] * 10;
     var stock = data[i][stockIndex];
+    var color = data[i][colorIndex];
+    var size = data[i][sizeIndex];
+    var sku = data[i][skuIndex];
 
     switch(type) {
       case "stockPrice":
@@ -139,16 +145,61 @@ function updateProducts(type=null) {
       break;
     }
 
-    setCellColor(sheet, i, idIndex, 'processing');
+    if (sku) {
+      requestData['sku'] = sku;
+    }
 
-    result = basalamPlusRequester('/v2.0/user/product/edit', requestData)
-    if (result.result) {
+    var _result = null;
+
+    if (color && size) {
+      _result = {"result": false, "message": "نمیتوانید همزمان هم رنگ و هم سایز در یک ردیف وارد کنید", "data": null};
+    } else {
+      if (color || size) {
+        requestData['variant'] = null;
+
+        if (color) {
+          variant = {
+              "property": "color",
+              "value": color,
+          };
+          
+        }
+
+        if (size) {
+          variant = {
+              "property": "size",
+              "value": size,
+          };
+          
+        }
+
+        for (const [key, value] of Object.entries(requestData)) {
+          if (key != 'variant' && value) {
+            variant[key] = value;
+          }
+        }
+
+        requestData['variant'] = variant;
+
+      }
+
+      setCellColor(sheet, i, idIndex, 'processing');
+
+      _result = basalamPlusRequester('/v2.0/user/product/edit', requestData)
+      if (_result.result && typeof _result.message !== 'undefined') {
+        _result.message = "انجام شد";
+      }
+    }
+
+    if (_result.result) {
       setCellColor(sheet, i, idIndex, 'success');
+      setCellColor(sheet, i, resultIndex, 'success');
     } else {
       setCellColor(sheet, i, idIndex, 'failure');
+      setCellColor(sheet, i, resultIndex, 'failure');
     }
     
-    sheet.getRange(i + 1, resultIndex + 1).setValue(result.message);
+    sheet.getRange(i + 1, resultIndex + 1).setValue(_result.message);
     
   }
 
