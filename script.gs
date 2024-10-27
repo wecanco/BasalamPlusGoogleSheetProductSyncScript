@@ -2,8 +2,16 @@
 // قیمت ها به تومان وارد شود
 
 
+// تنظیمات اجرای مرحله‌ای
+const BATCH_SIZE = 100; // تعداد سطرهای پردازش در هر مرحله
+const SCRIPT_PROPERTY_KEYS = {
+  CURRENT_ROW: 'CURRENT_ROW',
+  TOTAL_ROWS: 'TOTAL_ROWS',
+  SYNC_IN_PROGRESS: 'SYNC_IN_PROGRESS',
+  SYNC_TYPE: 'SYNC_TYPE'
+};
+
 var menu = null;
-let syncInProgress = false;
 
 function onOpen() {
   updateMenu();
@@ -12,201 +20,237 @@ function onOpen() {
 function updateMenu() {
   var ui = SpreadsheetApp.getUi();
   menu = ui.createMenu('همگام‌سازی محصولات باسلام');
-  menu.addItem('بروزرسانی قیمت و موجودی', 'updateProductsBoth')
-    .addItem('بروزرسانی موجودی', 'updateProductsStock')
-    .addItem('بروزرسانی قیمت', 'updateProductsPrice')
-    // .addItem('افزودن محصولات', 'addProducts')
-    // .addItem('بروزرسانی کامل محصولات', 'editProducts')
+  
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const syncInProgress = scriptProperties.getProperty(SCRIPT_PROPERTY_KEYS.SYNC_IN_PROGRESS) === 'true';
+  
+  menu.addItem('بروزرسانی قیمت و موجودی', 'startUpdateProductsBoth')
+    .addItem('بروزرسانی موجودی', 'startUpdateProductsStock')
+    .addItem('بروزرسانی قیمت', 'startUpdateProductsPrice')
     .addItem('تنظیم توکن', 'showApiKeyDialog');
   
   if (syncInProgress) {
     menu.addItem('توقف همگام‌سازی', 'stopSync');
   }
+  
   menu.addToUi();
 }
 
+function startUpdateProductsBoth() {
+  startBatchProcessing('stockPrice');
+}
 
-function showApiKeyDialog() {
-  var ui = SpreadsheetApp.getUi();
-  var result = ui.prompt(
-    'تنظیم توکن باسلام پلاس',
-    'توکن باسلام پلاس خود را وارد نمایید:',
-    ui.ButtonSet.OK_CANCEL
-  );
+function startUpdateProductsStock() {
+  startBatchProcessing('stock');
+}
 
-  var button = result.getSelectedButton();
-  var apiKey = result.getResponseText();
+function startUpdateProductsPrice() {
+  startBatchProcessing('price');
+}
+
+function startBatchProcessing(type) {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const data = sheet.getDataRange().getValues();
   
-  if (button == ui.Button.OK) {
-    PropertiesService.getScriptProperties().setProperty('BASALAM_PLUS_API_TOKEN', apiKey);
-    ui.alert('توکن با موفقیت تنظیم شد.');
-  } else {
-    //ui.alert('تنظیم توکن لغو شد.');
-  }
-}
-
-function updateProductsBoth() {
-  updateProducts('stockPrice');
-}
-function updateProductsStock() {
-  updateProducts('stock');
-}
-function updateProductsPrice() {
-  updateProducts('price');
-}
-
-
-function updateProducts(type=null) {
-  var sheet = SpreadsheetApp.getActiveSheet();
-  var data = sheet.getDataRange().getValues();
-  var headers = data[0];
-  
-  var idIndex = headers.indexOf('شناسه محصول');
-  var priceIndex = headers.indexOf('قیمت');
-  var skuIndex = headers.indexOf('شناسه داخلی');
-  var stockIndex = headers.indexOf('موجودی');
-  var colorIndex = headers.indexOf('رنگ');
-  var sizeIndex = headers.indexOf('سایز');
-  var resultIndex = headers.indexOf('نتیجه بروزرسانی');
-  
-  if (idIndex === -1) {
-    SpreadsheetApp.getUi().alert('ستون "شناسه محصول" یافت نشد.');
+  // بررسی وجود ستون‌های مورد نیاز
+  if (!validateColumns(data[0], type)) {
     return;
   }
+  
+  // تنظیم مقادیر اولیه
+  scriptProperties.setProperties({
+    [SCRIPT_PROPERTY_KEYS.CURRENT_ROW]: '1',
+    [SCRIPT_PROPERTY_KEYS.TOTAL_ROWS]: data.length.toString(),
+    [SCRIPT_PROPERTY_KEYS.SYNC_IN_PROGRESS]: 'true',
+    [SCRIPT_PROPERTY_KEYS.SYNC_TYPE]: type
+  });
+  
+  // شروع پردازش مرحله‌ای
+  processBatch();
+}
 
-  syncInProgress = true;
+function processBatch() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const currentRow = parseInt(scriptProperties.getProperty(SCRIPT_PROPERTY_KEYS.CURRENT_ROW));
+  const totalRows = parseInt(scriptProperties.getProperty(SCRIPT_PROPERTY_KEYS.TOTAL_ROWS));
+  const type = scriptProperties.getProperty(SCRIPT_PROPERTY_KEYS.SYNC_TYPE);
+  
+  if (currentRow >= totalRows || scriptProperties.getProperty(SCRIPT_PROPERTY_KEYS.SYNC_IN_PROGRESS) !== 'true') {
+    finishProcessing();
+    return;
+  }
+  
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  
+  const endRow = Math.min(currentRow + BATCH_SIZE, totalRows);
+  
+  for (let i = currentRow; i < endRow; i++) {
+    processRow(sheet, data, headers, i, type);
+  }
+  
+  // تنظیم سطر بعدی و برنامه‌ریزی اجرای بعدی
+  scriptProperties.setProperty(SCRIPT_PROPERTY_KEYS.CURRENT_ROW, endRow.toString());
+  ScriptApp.newTrigger('processBatch')
+    .timeBased()
+    .after(1000) // 1 ثانیه تاخیر
+    .create();
+}
+
+function processRow(sheet, data, headers, rowIndex, type) {
+  const idIndex = headers.indexOf('شناسه محصول');
+  const priceIndex = headers.indexOf('قیمت');
+  const skuIndex = headers.indexOf('شناسه داخلی');
+  const stockIndex = headers.indexOf('موجودی');
+  const colorIndex = headers.indexOf('رنگ');
+  const sizeIndex = headers.indexOf('سایز');
+  const resultIndex = headers.indexOf('نتیجه بروزرسانی') === -1 ? 
+    headers.length : headers.indexOf('نتیجه بروزرسانی');
+  
+  const row = data[rowIndex];
+  const requestData = prepareRequestData(row, type, {
+    idIndex, priceIndex, stockIndex, skuIndex, colorIndex, sizeIndex
+  });
+  
+  let result;
+  if (row[colorIndex] && row[sizeIndex]) {
+    result = {
+      result: false,
+      message: "نمیتوانید همزمان هم رنگ و هم سایز در یک ردیف وارد کنید"
+    };
+  } else {
+    setCellColor(sheet, rowIndex, idIndex, 'processing');
+    result = basalamPlusRequester('/v2.0/user/product/edit', requestData);
+    if (result.result && typeof result.message === 'undefined') {
+      result.message = "انجام شد";
+    }
+  }
+  
+  // بروزرسانی نتیجه در شیت
+  updateResultInSheet(sheet, rowIndex, idIndex, resultIndex, result);
+}
+
+function prepareRequestData(row, type, indices) {
+  const { idIndex, priceIndex, stockIndex, skuIndex, colorIndex, sizeIndex } = indices;
+  
+  let requestData = {
+    id: row[idIndex]
+  };
+  
+  switch(type) {
+    case "stockPrice":
+      requestData.price = row[priceIndex] * 10;
+      requestData.stock = row[stockIndex];
+      break;
+    case "stock":
+      requestData.stock = row[stockIndex];
+      break;
+    case "price":
+      requestData.price = row[priceIndex] * 10;
+      break;
+  }
+  
+  if (row[skuIndex]) {
+    requestData.sku = row[skuIndex];
+  }
+  
+  // اضافه کردن variant در صورت وجود رنگ یا سایز
+  if (row[colorIndex] || row[sizeIndex]) {
+    const variant = {};
+    if (row[colorIndex]) {
+      variant.property = "color";
+      variant.value = row[colorIndex];
+    } else if (row[sizeIndex]) {
+      variant.property = "size";
+      variant.value = row[sizeIndex];
+    }
+    
+    // کپی کردن سایر مقادیر به variant
+    Object.keys(requestData).forEach(key => {
+      if (key !== 'variant' && requestData[key]) {
+        variant[key] = requestData[key];
+      }
+    });
+    
+    requestData.variant = variant;
+  }
+  
+  return requestData;
+}
+
+function updateResultInSheet(sheet, rowIndex, idIndex, resultIndex, result) {
+  if (result.result) {
+    setCellColor(sheet, rowIndex, idIndex, 'success');
+    setCellColor(sheet, rowIndex, resultIndex, 'success');
+  } else {
+    setCellColor(sheet, rowIndex, idIndex, 'failure');
+    setCellColor(sheet, rowIndex, resultIndex, 'failure');
+  }
+  
+  sheet.getRange(rowIndex + 1, resultIndex + 1).setValue(result.message);
+}
+
+function finishProcessing() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.setProperties({
+    [SCRIPT_PROPERTY_KEYS.SYNC_IN_PROGRESS]: 'false',
+    [SCRIPT_PROPERTY_KEYS.CURRENT_ROW]: '',
+    [SCRIPT_PROPERTY_KEYS.TOTAL_ROWS]: '',
+    [SCRIPT_PROPERTY_KEYS.SYNC_TYPE]: ''
+  });
+  
   updateMenu();
-  var requestData = null;
+  SpreadsheetApp.getUi().alert('بروزرسانی محصولات به پایان رسید.');
+  
+  // حذف همه تریگرهای زمان‌بندی شده
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => ScriptApp.deleteTrigger(trigger));
+}
 
+function stopSync() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.setProperty(SCRIPT_PROPERTY_KEYS.SYNC_IN_PROGRESS, 'false');
+  SpreadsheetApp.getUi().alert('همگام‌سازی متوقف شد.');
+  updateMenu();
+}
+
+function validateColumns(headers, type) {
+  const ui = SpreadsheetApp.getUi();
+  const idIndex = headers.indexOf('شناسه محصول');
+  const priceIndex = headers.indexOf('قیمت');
+  const stockIndex = headers.indexOf('موجودی');
+  
+  if (idIndex === -1) {
+    ui.alert('ستون "شناسه محصول" یافت نشد.');
+    return false;
+  }
+  
   switch(type) {
     case "stockPrice":
       if (priceIndex === -1 || stockIndex === -1) {
-        SpreadsheetApp.getUi().alert('ستون‌های مورد نیاز یافت نشد. لطفاً مطمئن شوید که ستون‌های "قیمت" و "موجودی" وجود دارند.');
-        syncInProgress = false;
-        updateMenu();
-        return;
+        ui.alert('ستون‌های مورد نیاز یافت نشد. لطفاً مطمئن شوید که ستون‌های "قیمت" و "موجودی" وجود دارند.');
+        return false;
       }
-    break;
-
+      break;
     case "stock":
       if (stockIndex === -1) {
-        SpreadsheetApp.getUi().alert('لطفاً مطمئن شوید که ستون‌ "موجودی" وجود دارد.');
-        syncInProgress = false;
-        updateMenu();
-        return;
+        ui.alert('لطفاً مطمئن شوید که ستون‌ "موجودی" وجود دارد.');
+        return false;
       }
-      
-    break;
-
+      break;
     case "price":
       if (priceIndex === -1) {
-        SpreadsheetApp.getUi().alert('لطفاً مطمئن شوید که ستون‌ "قیمت" وجود دارد.');
-        syncInProgress = false;
-        updateMenu();
-        return;
+        ui.alert('لطفاً مطمئن شوید که ستون‌ "قیمت" وجود دارد.');
+        return false;
       }
-      
-    break;
-
+      break;
   }
   
-  if (resultIndex === -1) {
-    resultIndex = headers.length;
-    sheet.getRange(1, resultIndex + 1).setValue('نتیجه بروزرسانی');
-  }
-
-  for (var i = 1; i < data.length; i++) {
-    var productId = data[i][idIndex];
-    var price = data[i][priceIndex] * 10;
-    var stock = data[i][stockIndex];
-    var color = data[i][colorIndex];
-    var size = data[i][sizeIndex];
-    var sku = data[i][skuIndex];
-
-    switch(type) {
-      case "stockPrice":
-        requestData = {
-          "id": productId,
-          "price": price,
-          "stock": stock,
-        };
-      break;
-      case "stock":
-        requestData = {
-          "id": productId,
-          "stock": stock
-        };
-      break;
-      case "price":
-        requestData = {
-          "id": productId,
-          "price": price
-        };
-      break;
-    }
-
-    if (sku) {
-      requestData['sku'] = sku;
-    }
-
-    var _result = null;
-
-    if (color && size) {
-      _result = {"result": false, "message": "نمیتوانید همزمان هم رنگ و هم سایز در یک ردیف وارد کنید", "data": null};
-    } else {
-      if (color || size) {
-        requestData['variant'] = null;
-
-        if (color) {
-          variant = {
-              "property": "color",
-              "value": color,
-          };
-          
-        }
-
-        if (size) {
-          variant = {
-              "property": "size",
-              "value": size,
-          };
-          
-        }
-
-        for (const [key, value] of Object.entries(requestData)) {
-          if (key != 'variant' && value) {
-            variant[key] = value;
-          }
-        }
-
-        requestData['variant'] = variant;
-
-      }
-
-      setCellColor(sheet, i, idIndex, 'processing');
-
-      _result = basalamPlusRequester('/v2.0/user/product/edit', requestData)
-      if (_result.result && typeof _result.message !== 'undefined') {
-        _result.message = "انجام شد";
-      }
-    }
-
-    if (_result.result) {
-      setCellColor(sheet, i, idIndex, 'success');
-      setCellColor(sheet, i, resultIndex, 'success');
-    } else {
-      setCellColor(sheet, i, idIndex, 'failure');
-      setCellColor(sheet, i, resultIndex, 'failure');
-    }
-    
-    sheet.getRange(i + 1, resultIndex + 1).setValue(_result.message);
-    
-  }
-
-  syncInProgress = false;
-  updateMenu();
-  SpreadsheetApp.getUi().alert('بروزرسانی محصولات به پایان رسید.');
+  return true;
 }
+
 
 function basalamPlusRequester(uri, data, method="POST") {
   var apiBaseUrl = 'https://plus.basalam.com/api';
@@ -237,6 +281,9 @@ function basalamPlusRequester(uri, data, method="POST") {
   var responseText = response.getContentText();
   
   var result;
+  
+  Utilities.sleep(500); 
+
   try {
     // تبدیل رشته JSON با کدهای یونیکد به متن فارسی قابل خواندن
     responseText = decodeUnicodeEscapes(responseText);
