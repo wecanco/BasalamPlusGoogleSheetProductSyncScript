@@ -1,9 +1,10 @@
 // نکات
-// قیمت ها به تومان وارد شود
+// قیمت ها به تومان وارد شوند
 
 
 // تنظیمات اجرای مرحله‌ای
 const BATCH_SIZE = 100; // تعداد سطرهای پردازش در هر مرحله
+const REQUEST_DELAY = 1000; // تاخیر 1 ثانیه بین هر درخواست
 const SCRIPT_PROPERTY_KEYS = {
   CURRENT_ROW: 'CURRENT_ROW',
   TOTAL_ROWS: 'TOTAL_ROWS',
@@ -34,6 +35,23 @@ function updateMenu() {
   }
   
   menu.addToUi();
+}
+
+function showApiKeyDialog() {
+  var ui = SpreadsheetApp.getUi();
+  var result = ui.prompt(
+    'تنظیم توکن باسلام پلاس',
+    'توکن باسلام پلاس خود را وارد نمایید:',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  var button = result.getSelectedButton();
+  var apiKey = result.getResponseText();
+  
+  if (button == ui.Button.OK) {
+    PropertiesService.getScriptProperties().setProperty('BASALAM_PLUS_API_TOKEN', apiKey);
+    ui.alert('توکن با موفقیت تنظیم شد.');
+  }
 }
 
 function startUpdateProductsBoth() {
@@ -89,13 +107,20 @@ function processBatch() {
   
   for (let i = currentRow; i < endRow; i++) {
     processRow(sheet, data, headers, i, type);
+    
+    // اضافه کردن تاخیر بین درخواست‌ها
+    if (i < endRow - 1) { // برای آخرین آیتم تاخیر نمی‌خواهیم
+      Utilities.sleep(REQUEST_DELAY);
+    }
   }
   
   // تنظیم سطر بعدی و برنامه‌ریزی اجرای بعدی
   scriptProperties.setProperty(SCRIPT_PROPERTY_KEYS.CURRENT_ROW, endRow.toString());
+  
+  // زمان‌بندی اجرای بعدی با تاخیر
   ScriptApp.newTrigger('processBatch')
     .timeBased()
-    .after(1000) // 1 ثانیه تاخیر
+    .after(REQUEST_DELAY)
     .create();
 }
 
@@ -109,23 +134,33 @@ function processRow(sheet, data, headers, rowIndex, type) {
   const resultIndex = headers.indexOf('نتیجه بروزرسانی') === -1 ? 
     headers.length : headers.indexOf('نتیجه بروزرسانی');
   
-  const row = data[rowIndex];
-  const requestData = prepareRequestData(row, type, {
-    idIndex, priceIndex, stockIndex, skuIndex, colorIndex, sizeIndex
-  });
-  
   let result;
-  if (row[colorIndex] && row[sizeIndex]) {
+  try {
+    const row = data[rowIndex];
+    const requestData = prepareRequestData(row, type, {
+      idIndex, priceIndex, stockIndex, skuIndex, colorIndex, sizeIndex
+    });
+    
+    if (row[colorIndex] && row[sizeIndex]) {
+      result = {
+        result: false,
+        message: "نمیتوانید همزمان هم رنگ و هم سایز در یک ردیف وارد کنید"
+      };
+    } else {
+      setCellColor(sheet, rowIndex, idIndex, 'processing');
+      result = basalamPlusRequester('/v2.0/user/product/edit', requestData);
+      if (result.result && typeof result.message === 'undefined') {
+        result.message = "انجام شد";
+      } else if (result.result) {
+        result.message = "انجام شد";
+      }
+    }
+  } catch (error) {
     result = {
       result: false,
-      message: "نمیتوانید همزمان هم رنگ و هم سایز در یک ردیف وارد کنید"
+      message: `خطا: ${error.message}`
     };
-  } else {
-    setCellColor(sheet, rowIndex, idIndex, 'processing');
-    result = basalamPlusRequester('/v2.0/user/product/edit', requestData);
-    if (result.result && typeof result.message === 'undefined') {
-      result.message = "انجام شد";
-    }
+    console.error(`Error processing row ${rowIndex + 1}:`, error);
   }
   
   // بروزرسانی نتیجه در شیت
@@ -251,16 +286,30 @@ function validateColumns(headers, type) {
   return true;
 }
 
+function setCellColor(sheet, row, col, status) {
+  var cell = sheet.getRange(row + 1, col + 1);
+  switch(status) {
+    case 'processing':
+      cell.setBackground('#FFFDE7'); // Light yellow
+      break;
+    case 'success':
+      cell.setBackground('#E8F5E9'); // Light green
+      break;
+    case 'failure':
+      cell.setBackground('#FFEBEE'); // Light red
+      break;
+    default:
+      cell.setBackground('#FFFFFF'); // White (reset)
+  }
+}
 
 function basalamPlusRequester(uri, data, method="POST") {
   var apiBaseUrl = 'https://plus.basalam.com/api';
-  var apiUrl = apiBaseUrl+uri;
+  var apiUrl = apiBaseUrl + uri;
   var apiKey = PropertiesService.getScriptProperties().getProperty('BASALAM_PLUS_API_TOKEN');
 
   if (!apiKey) {
     SpreadsheetApp.getUi().alert("توکن تنظیم نشده");
-    syncInProgress = false;
-    updateMenu();
     throw new Error("توکن تنظیم نشده");
   }
   
@@ -281,15 +330,9 @@ function basalamPlusRequester(uri, data, method="POST") {
   var responseText = response.getContentText();
   
   var result;
-  
-  Utilities.sleep(500); 
-
   try {
-    // تبدیل رشته JSON با کدهای یونیکد به متن فارسی قابل خواندن
     responseText = decodeUnicodeEscapes(responseText);
     result = JSON.parse(responseText);
-    
-    // تبدیل بازگشتی تمام مقادیر رشته‌ای درون آبجکت نتیجه
     result = recursivelyDecodeUnicode(result);
   } catch (e) {
     result = { result: false, message: "خطا در تجزیه پاسخ", data: responseText };
@@ -305,7 +348,6 @@ function basalamPlusRequester(uri, data, method="POST") {
   }
 
   Logger.log(JSON.stringify(result, null, 2));
-
   return result;
 }
 
@@ -328,21 +370,4 @@ function recursivelyDecodeUnicode(obj) {
     });
   }
   return obj;
-}
-
-function setCellColor(sheet, row, col, status) {
-  var cell = sheet.getRange(row + 1, col + 1);
-  switch(status) {
-    case 'processing':
-      cell.setBackground('#FFFDE7'); // Light yellow
-      break;
-    case 'success':
-      cell.setBackground('#E8F5E9'); // Light green
-      break;
-    case 'failure':
-      cell.setBackground('#FFEBEE'); // Light red
-      break;
-    default:
-      cell.setBackground('#FFFFFF'); // White (reset)
-  }
 }
