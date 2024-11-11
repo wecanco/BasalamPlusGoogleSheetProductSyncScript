@@ -37,6 +37,7 @@ function updateMenu() {
   menu.addToUi();
 }
 
+
 function showApiKeyDialog() {
   var ui = SpreadsheetApp.getUi();
   var result = ui.prompt(
@@ -117,11 +118,14 @@ function processBatch() {
   // تنظیم سطر بعدی و برنامه‌ریزی اجرای بعدی
   scriptProperties.setProperty(SCRIPT_PROPERTY_KEYS.CURRENT_ROW, endRow.toString());
   
-  // زمان‌بندی اجرای بعدی با تاخیر
-  ScriptApp.newTrigger('processBatch')
-    .timeBased()
-    .after(REQUEST_DELAY)
-    .create();
+  // ادامه پردازش با تاخیر (بدون تریگر)
+  if (endRow < totalRows) {
+    // استفاده از یک تأخیر برای ادامه‌ی پردازش در مرحله بعد
+									  
+				
+    Utilities.sleep(REQUEST_DELAY);
+    processBatch();
+  }
 }
 
 function processRow(sheet, data, headers, rowIndex, type) {
@@ -351,14 +355,14 @@ function basalamPlusRequester(uri, data, method="POST") {
   return result;
 }
 
-// تابع کمکی برای تبدیل کدهای یونیکد به کاراکترهای فارسی
+												   
 function decodeUnicodeEscapes(str) {
   return str.replace(/\\u([\d\w]{4})/gi, function (match, grp) {
     return String.fromCharCode(parseInt(grp, 16));
   });
 }
 
-// تابع کمکی برای تبدیل بازگشتی تمام مقادیر رشته‌ای درون یک آبجکت
+														   
 function recursivelyDecodeUnicode(obj) {
   if (typeof obj === 'string') {
     return decodeUnicodeEscapes(obj);
