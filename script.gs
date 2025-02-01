@@ -1,10 +1,9 @@
 // نکات
 // قیمت ها به تومان وارد شوند
 
-
 // تنظیمات اجرای مرحله‌ای
-const BATCH_SIZE = 100; // تعداد سطرهای پردازش در هر مرحله
-const REQUEST_DELAY = 1000; // تاخیر 1 ثانیه بین هر درخواست
+const BATCH_SIZE = 1; // تعداد سطرهای پردازش در هر مرحله
+const REQUEST_DELAY = 500; // تاخیر ثانیه بین هر درخواست
 const SCRIPT_PROPERTY_KEYS = {
   CURRENT_ROW: 'CURRENT_ROW',
   TOTAL_ROWS: 'TOTAL_ROWS',
@@ -135,6 +134,7 @@ function processRow(sheet, data, headers, rowIndex, type) {
   const stockIndex = headers.indexOf('موجودی');
   const colorIndex = headers.indexOf('رنگ');
   const sizeIndex = headers.indexOf('سایز');
+  const weightIndex = headers.indexOf('وزن');
   const resultIndex = headers.indexOf('نتیجه بروزرسانی') === -1 ? 
     headers.length : headers.indexOf('نتیجه بروزرسانی');
   
@@ -142,10 +142,15 @@ function processRow(sheet, data, headers, rowIndex, type) {
   try {
     const row = data[rowIndex];
     const requestData = prepareRequestData(row, type, {
-      idIndex, priceIndex, stockIndex, skuIndex, colorIndex, sizeIndex
+      idIndex, priceIndex, stockIndex, skuIndex, colorIndex, sizeIndex, weightIndex
     });
-    
-    if (row[colorIndex] && row[sizeIndex]) {
+
+    if (row[idIndex] == '') {
+      result = {
+        result: false,
+        message: ""
+      };
+    } else if (row[colorIndex] && row[sizeIndex]) {
       result = {
         result: false,
         message: "نمیتوانید همزمان هم رنگ و هم سایز در یک ردیف وارد کنید"
@@ -172,7 +177,7 @@ function processRow(sheet, data, headers, rowIndex, type) {
 }
 
 function prepareRequestData(row, type, indices) {
-  const { idIndex, priceIndex, stockIndex, skuIndex, colorIndex, sizeIndex } = indices;
+  const { idIndex, priceIndex, stockIndex, skuIndex, colorIndex, sizeIndex, weightIndex } = indices;
   
   let requestData = {
     id: row[idIndex]
@@ -196,7 +201,7 @@ function prepareRequestData(row, type, indices) {
   }
   
   // اضافه کردن variant در صورت وجود رنگ یا سایز
-  if (row[colorIndex] || row[sizeIndex]) {
+  if (row[colorIndex] || row[sizeIndex] || row[weightIndex]) {
     const variant = {};
     if (row[colorIndex]) {
       variant.property = "color";
@@ -204,6 +209,9 @@ function prepareRequestData(row, type, indices) {
     } else if (row[sizeIndex]) {
       variant.property = "size";
       variant.value = row[sizeIndex];
+    } else if (row[weightIndex]) {
+      variant.property = "weight";
+      variant.value = row[weightIndex];
     }
     
     // کپی کردن سایر مقادیر به variant
@@ -351,6 +359,7 @@ function basalamPlusRequester(uri, data, method="POST") {
     }
   }
 
+  // SpreadsheetApp.getUi().alert(JSON.stringify(options, null, 2));
   Logger.log(JSON.stringify(result, null, 2));
   return result;
 }
@@ -375,3 +384,4 @@ function recursivelyDecodeUnicode(obj) {
   }
   return obj;
 }
+
